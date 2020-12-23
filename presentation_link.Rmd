@@ -1,0 +1,25 @@
+---
+title: "Link to the Presentation"
+author: "Panagiotis Stylianos"
+date: "23/12/2020"
+output: 
+ bookdown::html_document2
+theme: journal
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Presentation Link
+
+
+The presentation can be accessed from this __[link](https://anz-presentation.netlify.app)__. 
+Instead of a powerpoint the presentation is hosted online in order to provide interactive components for the user.  
+
+In the __Forage__ website I had to upload a file, otherwise I would have just provided the link.
+
+Enjoy here: https://anz-presentation.netlify.app
+
+Thank you very much.

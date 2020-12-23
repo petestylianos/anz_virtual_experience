@@ -1,0 +1,356 @@
+---
+title: "Exploratory Data Analysis on Customer's Accounts"
+subtitle: "Insights"  
+author: 
+  - "Panagiotis Stylianos"
+date: '`r Sys.Date()`'
+output:
+  xaringan::moon_reader:
+    lib_dir: libs
+    css: ["ninjutsu", "lucy", "my-style.css"]
+    seal: false
+    includes:
+       after_body: "collapseoutput.js"
+    nature:
+      highlightStyle: github 
+      highlightLanguage: r 
+      highlightLines: true
+      highlightSpans: false 
+      countIncrementalSlides: false
+      slideNumberFormat: '%current%/%total%'
+      ratio: '16:9'
+---
+
+```{r setup, include=FALSE}
+options(htmltools.dir.version = FALSE)
+knitr::opts_chunk$set(message=FALSE, warning=FALSE, echo=FALSE)
+```
+
+```{r xaringan-themer, include=FALSE, warning=FALSE}
+library(xaringanthemer)
+library(leaflet)
+library(lubridate)
+library(visdat)
+library(patchwork)
+library(janitor)
+# The dataset contains 3 months of transactions for 100 customers 
+library(tidyverse)
+xaringanExtra::use_panelset()
+
+style_duo_accent(
+  primary_color = "#1381B0",
+  secondary_color = "#FF961C",
+  inverse_header_color = "#FFFFFF"
+)
+
+file <- readxl::read_xlsx("data/synthesised-transaction-dataset.xlsx", 
+                          trim_ws = TRUE, 
+                          col_types = c("text","numeric", "text", "text", "text", "text", "text", "text", "numeric",
+                                        "text", "numeric", "date", "text", "numeric", "text", "text", "text", "numeric",
+                                        "text", "text", "text", "text","text"))
+
+
+```
+
+class: title-slide, my-one-page-font 
+
+# Exploring Customer's Accounts
+ <br><br><br><br><br><br>
+.left[
+.green[Panagiotis Stylianos]
+] 
+
+.left[`r Sys.Date()`]
+
+.footer[`r icon::fa('book')` Data@ANZ ]
+
+---
+
+## .blue[Data Concerns]
+
+.panelset[
+
+.panel[.panel-name[Summary]
+
+> **.blue[14%]** of the dataset has missing values.
+
+> **.blue[93%]** of the bpay_biller_code and merchant_code variables is missing.
+
+> The rest of the important numerical variables are **.blue[100%]** present. 
+
+> Location of client with account .blue["ACC-2901672282"] seems to be incorrect
+
+> **.blue[8]** of the transactions exceed the amount of **.blue[5000]** under which most of the transactions fell.
+
+> What stand out is that only .red[one] of these transactions is registered as **.blue[expenses]** with the rest being **.blue[salary payments]**.
+
+
+]
+
+.panel[.panel-name[Missing Data]
+
+
+```{r,  fig.width=14, fig.height=6, fig.retina=3}
+visdat::vis_miss(file) +
+  theme(
+    axis.text = element_text(size = 10)
+  ) +
+  labs(
+    title = "% of Missing Data"
+  ) +
+  theme(
+    plot.background = element_rect(fill = "cornsilk")
+  )
+
+```
+
+
+]
+
+.panel[.panel-name[Client's Location]
+
+> Use the interactive map to get exta info per customer (in blue) and merchant (in orange).
+
+```{r map, echo=FALSE, fig.width=14, fig.height=6, fig.retina=3}
+file <- file %>% 
+  separate(long_lat, into = c("long", "lat"), sep = "-") %>% 
+  separate(merchant_long_lat, into = c("merch_long", "merch_lat"), sep = "-") %>% 
+  mutate(long = as.numeric(long),
+         lat = as.numeric(lat),
+         merch_long = as.numeric(merch_long),
+         merch_lat = as.numeric(merch_lat),
+         date = lubridate::as_date(date),
+         month = month(date),
+         day = day(date),
+         lat = lat * (-1),
+         merch_lat = merch_lat * (-1),
+         time = stringr::str_sub(extraction, start = 12, end = 19),
+         hour = stringr::str_sub(time, start = 1, end = 2))
+
+
+
+customer_map_data <- file %>% 
+  select(account,long, lat) %>% 
+  distinct()
+
+merch_map_data <-  file %>% 
+  select(merch_long, merch_lat, merchant_suburb) %>% 
+  na.omit() %>% 
+  distinct()
+  
+leaflet() %>% 
+  addProviderTiles("Stamen.Terrain") %>% 
+  addMarkers(lng = customer_map_data$long, lat = customer_map_data$lat, 
+             label = customer_map_data$account) %>% 
+  addCircleMarkers(lng = merch_map_data$merch_long, lat = merch_map_data$merch_lat, label = merch_map_data$merchant_suburb,
+                   color = 'orangee', fill = T, fillColor = 'orange')
+
+```
+
+]
+
+.panel[.panel-name[Outliers]
+
+> Hover over the points to gain more insight about the transaction and the customer.
+
+``` {r, fig.width=14, fig.height=5, fig.retina=3}
+library(FNN)
+
+amount_knn <- get.knn(file[, 'amount'])
+
+
+
+file_amount <- file %>% 
+  select(date, amount, balance, account, txn_description)
+
+
+file_amount$knn_score <- rowMeans(amount_knn$nn.dist)
+
+plotly::ggplotly(
+file_amount %>% 
+  ggplot(aes(date, amount, size = knn_score, color = txn_description, label = account)) +
+  geom_point() +
+  geom_hline(yintercept = 5000, lwd = 1.5, color = "red") +
+  scale_size(guide = "none") +
+  ggthemes::scale_color_colorblind(guide = "none") +
+  theme_classic()
+) 
+```
+
+]
+]
+
+---
+## .blue[Average Transaction Amount per Type and Month]
+
+.panelset[
+.panel[.panel-name[Summary]
+
+The next table summarizes the average transaction per type and month.
+
+> The average transaction is consistent across all months for every type.
+
+> Use the search option to identify specific transactions by their type or the month they occurred.
+
+]
+
+.panel[.panel-name[Plot]
+```{r, echo=FALSE, cache = TRUE, fig.height = 2, fig.width=4, fig.retina=3}
+DT::datatable(
+file %>% 
+  mutate(
+    month = case_when(
+      month == '8' ~ 'August',
+      month == '9' ~ 'September',
+      month == '10' ~ 'October'
+    )
+  ) %>% 
+  group_by(txn_description, month) %>% 
+  summarise(average_transaction = round(mean(amount, na.rm = TRUE),2)) %>% 
+  arrange(txn_description) 
+) %>% 
+  DT::formatStyle(columns = colnames(.), fontSize = '50%')
+
+```
+]
+]
+---
+## .blue[Further Insight]
+
+.panelset[
+.panel[.panel-name[Summary]
+
+
+> Finally, I attempted to provide some additional insight based on the customer's data.
+
+> All transaction types except salary payments show insignificant variacne with the exception of few outliers.
+
+> All salary payments in the dataset occur between 10:00 and 17:00, thus allowing the bank to detect potential fraudulent transactions.
+
+> The last slide classifies the customers based on gender to identify which customers spend a bigger proporiton of their salary, thus helping the bank to assess their credit risk in case they are interested in a loan.
+
+
+]
+
+.panel[.panel-name[Transactions Over Time]
+
+```{r, fig.width=14, fig.height=6, fig.retina=3}
+file %>% 
+  mutate(
+    month = case_when(
+      month == '8' ~ 'August',
+      month == '9' ~ 'September',
+      month == '10' ~ 'October'
+    ),
+    month = factor(month, levels = c("August", "September", "October"))
+  ) %>% 
+  filter(amount > 100) %>% 
+  ggplot(aes(month, amount, fill = txn_description)) +
+  geom_boxplot() + 
+  labs(
+    title = "Distribution of transaction amount by type "
+  ) +
+
+
+file %>% 
+  group_by(hour, txn_description) %>% 
+  count() %>% 
+  ggplot(aes(hour, n, fill = txn_description)) +
+  geom_col() + 
+  facet_wrap(~txn_description) +
+  theme_classic() +
+  ggthemes::scale_fill_economist() +
+  labs(
+    x = 'Hour',
+    y = "Transaction Volume"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90, size = 4)
+  ) +
+  labs(
+    title = "Number of Transactions by hour and type"
+  )
+
+```
+
+]
+.panel[.panel-name[Client Profile]
+
+```{r, fig.width=14, fig.height=6, fig.retina=3}
+income <- file %>% 
+  group_by(account, gender) %>% 
+  select(txn_description, balance, amount, date, gender) %>% 
+  filter(txn_description == "PAY/SALARY") %>% 
+  summarise(total_payment = sum(amount)) %>% 
+  arrange(desc(total_payment))
+
+expenses <- file %>% 
+  group_by(account) %>% 
+  select(txn_description, balance, amount, date) %>% 
+  filter(txn_description %in% c("POS", "SALES-POS", "PAYMENT")) %>% 
+  summarise(total_expenses = sum(amount)) %>% 
+  arrange(desc(total_expenses))
+
+client_profile <- inner_join(income, expenses, by = "account") %>% 
+  mutate(exp_perc_of_salary = total_expenses/total_payment * 100) %>% 
+  arrange(desc(exp_perc_of_salary))
+
+
+client_profile %>% 
+  ggplot(aes(total_payment, y = ..density.., group = gender)) +
+  geom_density(aes(fill = gender, color = gender )) +
+  geom_histogram(alpha = 0.6, fill = "grey", binwidth = 1000) +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+  
+  ) +
+  labs(
+    title = "Salary distribution",
+    x = "Salary",
+    y = ""
+
+  ) +
+  scale_fill_viridis_d() +
+  scale_color_viridis_d() +
+  
+
+client_profile %>% 
+  ggplot(aes(total_expenses, y = ..density..)) +
+  geom_density(aes(fill = gender, color = gender )) +
+  geom_histogram(alpha = 0.6, fill = "grey", binwidth = 500) +
+  theme_classic() +
+  theme(
+    legend.position = "bottom"
+  ) +
+  labs(
+    title = "Expenses distribution",
+    x = "Total Expenses",
+    y = ""
+
+  ) +
+  scale_fill_viridis_d() +
+  scale_color_viridis_d() +
+
+
+client_profile %>% 
+  ggplot(aes(exp_perc_of_salary, y = ..density..)) +
+  geom_density(aes(fill = gender, color = gender )) +
+  geom_histogram(alpha = 0.6, fill = "grey") +
+  theme_classic() +
+  theme(
+    legend.position = "none"
+  ) +
+  labs(
+    title = "Distribution of expenses as % of salary",
+    x = "Expenses as percentage of Salary",
+    y = ""
+    
+  ) +
+  scale_fill_viridis_d() +
+  scale_color_viridis_d() 
+
+```
+
+]
+]

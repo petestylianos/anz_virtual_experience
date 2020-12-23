@@ -1,0 +1,25 @@
+.title-slide {
+  background-image: url("images/anz.jpg");
+  background-size: cover;
+  
+}
+
+.my-one-page-font {
+  font-size: 34px;
+  color:white;
+  font-family: avenir;
+}
+
+.remark-slide-content {
+    font-family: avenir;
+    background-color: #b3b3b3;
+}
+
+strong {
+    color: white;
+}
+
+.panelset .panel-tabs .panel-tab {
+    min-height: 20px;}
+    li {
+    font-size: 15px;}
