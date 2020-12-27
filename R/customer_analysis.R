@@ -82,7 +82,7 @@ file %>%
   arrange(desc(average_amaount))
 
 file %>% 
-  filter(amount > 1000) %>% 
+  filter(amount > 100) %>% 
   ggplot(aes(as.factor(month), amount, fill = txn_description)) +
   geom_boxplot()
 
@@ -152,7 +152,6 @@ client_profile %>%
   theme(
     legend.position = "bottom"
   ) +
-  +
   labs(
     x = "Total Expenses"
   ) +
@@ -168,7 +167,6 @@ client_profile %>%
   theme(
     legend.position = "none"
   ) +
-  +
   labs(
     x = "Expenses as percentage of Salary"
   ) +
@@ -323,8 +321,13 @@ file %>%
   count() %>% 
   ggplot(aes(hour, n, fill = txn_description)) +
   geom_col() + 
+  facet_wrap(~txn_description) +
   theme_classic() +
-  ggthemes::scale_fill_economist()
+  ggthemes::scale_fill_economist() +
+  labs(
+    x = 'Hour',
+    y = "Transaction Volume"
+  )
 
 
 

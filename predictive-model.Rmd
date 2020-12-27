@@ -1,0 +1,484 @@
+---
+title: "Salary Prediction Model"
+author: "Panagiotis Stylianos"
+date: "27/12/2020"
+output: 
+ bookdown::html_document2:
+   toc: true
+   toc_depth: 3
+   code_folding: show
+   number_sections: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, error = FALSE, message = FALSE)
+```
+
+## Load-and-Wrangle Data
+
+```{r data, echo=FALSE}
+library(tidyverse)
+library(lubridate)
+
+file <- readxl::read_xlsx("data/synthesised-transaction-dataset.xlsx", 
+                          trim_ws = TRUE, 
+                          col_types = c("text","numeric", "text", "text", "text", "text", "text", "text", "numeric",
+                                        "text", "numeric", "date", "text", "numeric", "text", "text", "text", "numeric",
+                                        "text", "text", "text", "text","text"))
+
+
+```
+
+
+```{r wrangle}
+file <- file %>% 
+  separate(long_lat, into = c("long", "lat"), sep = "-") %>% 
+  separate(merchant_long_lat, into = c("merch_long", "merch_lat"), sep = "-") %>% 
+  mutate(long = as.numeric(long),
+         lat = as.numeric(lat),
+         merch_long = as.numeric(merch_long),
+         merch_lat = as.numeric(merch_lat),
+         date = lubridate::as_date(date),
+         month = month(date),
+         day = day(date),
+         lat = lat * (-1),
+         merch_lat = merch_lat * (-1),
+         time = stringr::str_sub(extraction, start = 12, end = 19),
+         hour = stringr::str_sub(time, start = 1, end = 2))
+
+```
+
+## Annual Salary Prediction
+
+At first we have to find if all of our customers are __employed__.
+
+```{r employ}
+file %>% 
+  filter(txn_description == 'PAY/SALARY') %>% 
+  count(account) %>% 
+  n_distinct() %>% 
+  knitr::kable(caption = "Number of clients that are employed", col.names = "Count")
+```
+
+As wee see __all 100__ of our unique client's accounts are receiving a salary.  
+We also have to consider if during the four month period any of our customers got a raise. 
+
+```{r salary}
+file %>% 
+  group_by(account) %>% 
+  filter(txn_description == "PAY/SALARY") %>% 
+  select(date, amount) %>% 
+  ggplot(aes(date, amount, group = account)) +
+  geom_point() +
+  geom_line() +
+  scale_y_log10() +
+  labs(
+    title = "Payments Intervals",
+    x = "Salary",
+    y = "Date"
+  ) +
+  theme_classic() 
+```
+
+From this plot we identify that none of the customers has received a raise, but most of them are getting paid in different intervals. To identify customers that are getting paid weekly or monthly we have to extract the __elapsed dates between each payment__.  
+
+
+In this code chunk I calculated the time passed between each payment for each client.
+
+
+```{r pay-int}
+payment_intervals <- file %>% 
+  select(account, date, amount, txn_description) %>% 
+  filter(txn_description == 'PAY/SALARY') %>% 
+  group_by(account) %>% 
+  mutate(
+    payments_intervals = date - lag(date)
+  ) %>% 
+  filter(payments_intervals != "NA days") 
+  
+
+payment_intervals %>% 
+  tail(10) %>% 
+  knitr::kable(caption = "Elapsed Time between payments")
+```
+
+The payments_intervals table summarizes the frequency that all `r nrow(payment_intervals)` of the payments occurred. 
+
+```{r pay-groups}
+payment_intervals %>% 
+  ungroup() %>% 
+  count(payments_intervals, sort = TRUE) %>% 
+  knitr::kable(col.names = c("Payment Intervals", "Count"))
+```
+From this table we notice that most of our customers receive salary payments every week with the second customer cluster receiving payments every fortnight. Moreover, some of the customers receive monthly payments. Finally, certain transactions stand out as few clients received payments in consecutive days and one of the customers received payment after 61 days.
+
+Let's investigate this transactions a bit more.
+
+```{r suspisious}
+consec_payments <-  payment_intervals %>%
+  ungroup() %>% 
+  filter(payments_intervals == 0 ) %>%
+  pull(account) %>% 
+  unique()
+
+long_payments <- payment_intervals %>% 
+  ungroup() %>%  
+  filter(payments_intervals == 61 ) %>% 
+  pull(account) %>% 
+  unique()
+
+
+suspicious_accounts <- c(consec_payments, long_payments)
+
+suspicious_payments <- file %>% 
+  select(account, date, extraction, amount, txn_description) %>% 
+  filter(txn_description == 'PAY/SALARY') %>% 
+  group_by(account) %>% 
+  filter(account  %in% consec_payments) %>% 
+  mutate(
+    payments_intervals = date - lag(date)
+  ) %>% 
+  filter(payments_intervals == "0") %>% 
+  arrange(account)
+
+suspicious_payments %>% 
+  knitr::kable(caption = "Suspicious Payments")
+```
+
+These transactions concern consecutive payments, let's compare the transactions.
+
+```{r cons-trans}
+file %>%
+  filter(account %in% suspicious_payments$account, date %in% suspicious_payments$date, txn_description == 'PAY/SALARY') %>% 
+  group_by(account, extraction) %>% 
+  select(account, txn_description, extraction, transaction_id) %>% 
+  mutate(
+    is_transaction_id_same = transaction_id == lag(transaction_id)
+  ) %>% 
+  arrange(account) %>% 
+  select(account, extraction, is_transaction_id_same) %>% 
+  knitr::kable(caption = "Duplicates or separate transactions ?")
+```
+
+The FALSE values in the last column indicate that this observations are not duplicated, but rather that in seven occasions two different transactions have been placed in consecutive time-lapses for the exact same amounts indicating that these transactions might have to be reversed.
+
+In any case since the pattern doesn't hold consecutively for none of these accounts we will take into consideration only one of these "duplicated" transactions to calculate  the annual salary.
+
+
+At this point we return to our main task of calculating the annual salary.
+
+```{r cal-annual}
+annual_salary <- payment_intervals %>% 
+  filter(payments_intervals != 0) %>% # we exclude them since the same accounts are also included in the correct intervals 
+  mutate(
+    annual_salary = case_when(
+      payments_intervals == 7 ~ amount * 4 * 12,
+      payments_intervals == 14 ~ amount * 2 * 12,
+      payments_intervals == 61 ~ amount  * 6,
+      payments_intervals >= 27 ~ amount  * 12,
+    )
+  ) %>% 
+  distinct(account, annual_salary, payments_intervals) ## we have 110, because 10 accounts received payments in different intervals
+
+
+random_payments <- annual_salary %>% 
+  filter(payments_intervals <= 28) %>% 
+  group_by(account) %>% 
+  filter(n() > 1) %>% 
+  arrange(account) %>% 
+  distinct(account, annual_salary) %>% 
+  group_by(account) %>% 
+  pull(account) %>% 
+  unique()
+
+
+random_payments
+```
+Some of the accounts received the same payment but in different intervals every time.
+
+```{r random-int}
+file %>% 
+  filter(account %in% random_payments,
+         txn_description == "PAY/SALARY") %>% 
+  ggplot(aes(date, amount, color = account)) +
+  geom_point() +
+  labs(
+    title = "Different time lapse between payments"
+  )
+  
+```
+This graph illustrate that for the 4 bottom accounts the majority of the payments happens every week, with few exceptions, perhaps due to the nature of the job, and for the top 5 accounts every 14 days, as so we will calculate the annual salary for these accounts on the basis that the amount concerns weekly and fortnight payments respectively.
+
+```{r random-calc}
+
+remove <- payment_intervals %>% 
+  filter(account %in% random_payments) %>% 
+  group_by(account, payments_intervals) %>% 
+  count() %>% 
+  filter(n == 1) %>% 
+  select(-n)
+
+
+# Final annual salary estimation for all 100 accounts
+
+annual_salary <- annual_salary %>%
+  anti_join(remove) %>%
+  select(-payments_intervals) %>% 
+  distinct()
+
+
+annual_salary %>% 
+  head(10) %>% 
+  knitr::kable(caption = "Annual Salary")
+```
+
+We finally achieved our task of calculating all annual salary's for our 100 customers.  
+
+Now we can visualize the distribution of the annual salary
+
+```{r salary-dist}
+annual_salary %>% 
+  ggplot(aes(annual_salary, y = ..density..)) +
+  geom_histogram(binwidth = 2000, alpha = 0.5) +
+  geom_density(fill = 'blue', alpha = 0.4) +
+  theme_classic() +
+  labs(
+    title = "Distribution of annaual salary",
+    x = "Annual Salary",
+    y = ""
+  )
+```
+
+
+Let's join the two datasets together 
+
+
+```{r join}
+clients <- file %>% 
+  left_join(annual_salary, by = "account")
+```
+
+We can also compare the distribution by age groups. In our dataset the youngest client is `r min(clients$age)` and the oldest `r max(clients$age)`.
+
+Let's create three clusters of Youth(18-24), Adults(25-64), Seniors(65 years and over).
+
+```{r age-groups}
+clients <- clients %>% 
+  mutate(
+    age_group = case_when(
+      age <= 24 ~ "Youth",
+      age <= 64 ~ "Adults",
+      age > 64 ~ "Seniors"
+    )
+  )
+
+clients %>% 
+  count(age_group, sort = TRUE, name = "Total") %>% 
+  knitr::kable(caption = "Age Group Distribution")
+```
+
+Let's visualize the annual salary by age group.
+
+```{r distribution}
+clients %>% 
+  ggplot(aes(annual_salary, y = ..density.., fill = age_group))  +
+  geom_histogram(binwidth = 3000, alpha = 0.4) +
+  geom_density( alpha = 0.4) +
+  theme_classic() +
+  labs(
+    fill = "Age Groups"
+  )
+```
+
+We can also see if there is any apparent correlation between age and salary.
+
+```{r ggally}
+GGally::ggscatmat(clients, columns = c("annual_salary", "age", "amount"))
+```
+
+No strong correlation is found.  
+
+
+
+Let's measure the correlation between __annual_salary and volume of purchases/expenses__
+
+
+```{r purchases}
+clients %>% 
+  filter(txn_description %in% c("PAYMENT", "POS" , "SALES-POS")) %>% 
+  group_by(account, annual_salary) %>% 
+  count(txn_description) %>% 
+  na.omit() %>% 
+  ungroup() %>% 
+  select(annual_salary , n) %>% 
+  cor() %>% 
+  knitr::kable(caption = "Correlation between salary and number of payments", col.names = c("Annual Salary", 
+                                                                                            "Number of purchases"))
+```
+
+
+```{r buys}
+
+clients %>% 
+  filter(txn_description %in% c("PAYMENT", "POS" , "SALES-POS")) %>% 
+  group_by(account, gender, annual_salary) %>% 
+  count(txn_description) %>% 
+  na.omit() %>% 
+  ungroup() %>%  
+  ggplot(aes(n, annual_salary, color = gender)) +
+  geom_point() +
+  theme_classic() +
+  labs(
+    x = "Number of purchases",
+    y = "Annual Salary"
+  ) +
+  labs(
+    title = "Salary by Age"
+  )
+```
+
+
+
+
+
+
+```{r gedner}
+clients %>% 
+ggplot(aes(age, annual_salary, color = gender)) +
+  geom_point() +
+  theme_classic() +
+  labs(
+    x = "Age",
+    y = "Annual Salary"
+  )
+```
+
+
+
+Finally, we can find out with witch merchants our clients transact the most and investigate if there is an asocciation with the salary.
+
+```{r transaction-by-state}
+transactions_location <- clients %>% 
+  filter(txn_description %in% c("PAYMENT", "POS" , "SALES-POS")) %>% 
+  group_by(account, gender, annual_salary) %>% 
+  count(merchant_state) %>% 
+  na.omit() %>%
+  group_by(account) %>% 
+  filter(n == max(n)) %>% 
+  mutate(most_transactions_with = merchant_state) %>% 
+  select(account, most_transactions_with)
+  
+  
+clients <- clients %>% 
+  left_join(transactions_location, by = "account")
+  
+  clients %>% 
+  ggplot(aes(annual_salary, fill = most_transactions_with)) +
+  geom_boxplot() +
+  coord_flip() +
+    theme_classic() +
+    scale_fill_viridis_d() +
+    labs(
+      title = "Distribution of Salary based on merchant's location of most frequent transactions "
+    ) +
+    theme(
+    axis.text.x = element_blank()
+  )
+  
+```
+
+Through, all this figures so far we also explored the association with gender and salary.
+
+```{r gedner-distri}
+clients %>% 
+  ggplot(aes(annual_salary, fill = gender)) +
+  geom_boxplot() +
+  coord_flip() +
+  theme_classic() +
+  theme(
+    axis.text.x = element_blank()
+  ) +
+  ggtitle("Distribution of Salary by Gender")
+```
+## Modelling 
+
+I will begin with a linear model to predict the annual salary.
+
+```{r lm_model}
+
+#model_clients <- clients %>% 
+ # select(account, annual_salary, )
+
+
+model <- lm(annual_salary ~ balance + amount + age_group + gender + most_transactions_with,  data = clients)
+
+broom::tidy(model)
+```
+
+Although, the p-value's indicate that our independent variables are statistically significant, we have to also conisder the model metrics.
+
+
+```{r metcis}
+broom::glance(model)
+```
+
+As we see the adjusted r-squared value indicates that only 12% of the variability in the annual salary is explained by the independent variable.
+
+Finally we can also visualize the performance of the model
+
+
+```{r performance}
+ggResidpanel::resid_panel(model, plots = "R")
+```
+
+As we see the plot indicates an extreme number of highly influential observations. However, we can't exclude all of them since the remaining dataset wouldn't be representative of the original. 
+
+
+## Tree model
+
+With all the high influency points a tree model might be more appropriate.
+
+
+```{r tree2}
+library(rpart)
+library(rpart.plot)
+
+
+# Set seed and create assignment
+set.seed(1)
+assignment <- sample(1:3, size = nrow(clients), prob = c(0.7, 0.15, 0.15), replace = TRUE)
+
+# Create a train, validation and tests from the original data frame 
+clients_train <- clients[assignment == 1, ]    # subset grade to training indices only
+clients_valid <- clients[assignment == 2, ]  # subset grade to validation indices only
+clinets_test <- clients[assignment == 3, ]   # subset grade to test indices only
+
+
+# Train the model
+client_model <- rpart(formula =  annual_salary ~ age_group + gender + most_transactions_with,
+                     data = clients, 
+                     method = "anova")
+
+# Look at the model output                      
+print(client_model)
+```
+
+```{r figure-tree}
+rpart.plot(x = client_model, yesno = 2, type = 0, extra = 0)
+```
+Finally, we have to measure  the performance of the tree.
+
+```{r}
+pred <- predict(object = client_model,   # model object 
+                newdata = clients)  # test dataset
+
+# Compute the RMSE
+
+library(Metrics)
+rmse(actual = clients$annual_salary, 
+     predicted = pred)
+
+plotcp(client_model)
+```
+Cp is optimized with the current layout of our tree.
+
